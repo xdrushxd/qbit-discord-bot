@@ -30,7 +30,7 @@ A Discord bot that interfaces with qBittorrent to monitor and manage your torren
    ```
 4. Run the bot:
    ```bash
-   python discord.py
+   python qbit_bot.py
    ```
 
 ## Usage
