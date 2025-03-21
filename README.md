@@ -58,3 +58,9 @@ You can combine filters, for example:
 - **Better Formatting**: Rich Discord embeds for better readability
 - **Performance**: Efficient filtering and sorting of torrent lists
 - **Maintainability**: Well-documented code with clear structure 
+
+## Visual Pleasure
+
+- **Help Command Executed** https://i.imgur.com/UsgSkvU.png
+- **Server Output Shell** https://i.imgur.com/aJDLlU3.png
+- **Discord Channel Output** https://i.imgur.com/rSS5uga.png
