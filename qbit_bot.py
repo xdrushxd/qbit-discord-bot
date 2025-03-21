@@ -22,7 +22,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('bot.log'),
+        logging.FileHandler('bot.log', encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
@@ -144,6 +144,7 @@ class DiscordBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
+        intents.reactions = True
         super().__init__(
             command_prefix='$',
             intents=intents,
@@ -167,6 +168,8 @@ class DiscordBot(commands.Bot):
         self.update_interval = 300  # Update every 5 minutes
         self.current_category = "all"  # Track current category filter
         self.current_status_filter = "all"  # Track current status filter
+        self.auto_refresh_enabled = True  # Track auto-refresh state
+        self.refresh_reaction_users = set()  # Track users who have added the refresh reaction
 
         # Register commands
         self.add_commands()
@@ -210,6 +213,23 @@ class DiscordBot(commands.Bot):
         # Print to console and log file
         print(log_message)
         logger.info(f"Command executed: {command_str} by {user.name}#{user.discriminator}")
+
+    def _log_reaction(self, reaction, user, action):
+        """Log reaction events with user details"""
+        # Create a visually distinct log message
+        log_message = (
+            f"\n{'='*50}\n"
+            f"Reaction {action} by: {user.name}#{user.discriminator} (ID: {user.id})\n"
+            f"Server: {reaction.message.guild.name} (ID: {reaction.message.guild.id})\n"
+            f"Channel: #{reaction.message.channel.name} (ID: {reaction.message.channel.id})\n"
+            f"Emoji: {reaction.emoji}\n"
+            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"{'='*50}"
+        )
+        
+        # Print to console and log file
+        print(log_message)
+        logger.info(f"Reaction {action}: {reaction.emoji} by {user.name}#{user.discriminator}")
 
     def add_commands(self):
         @self.event
@@ -354,6 +374,66 @@ If something's not working, contact the admin!
             embed.set_footer(text="🤖 Type $status to check your downloads!")
             await ctx.send(embed=embed)
 
+        @self.event
+        async def on_reaction_add(reaction, user):
+            # Ignore bot's own reactions
+            if user.bot:
+                return
+                
+            # Check if this is our status message
+            if reaction.message == self.last_status_message:
+                emoji = str(reaction.emoji)
+                
+                # If it's not one of our control emojis, remove it
+                if emoji not in ["⏸️", "▶️"]:
+                    await reaction.remove(user)
+                    return
+                
+                # Handle pause emoji
+                if emoji == "⏸️":
+                    self.auto_refresh_enabled = False
+                    
+                    # Update the embed footer
+                    embed = reaction.message.embeds[0]
+                    footer_text = embed.footer.text
+                    footer_text = footer_text.replace("🔄 Auto-refresh enabled", "⏸️ Auto-refresh paused")
+                    embed.set_footer(text=footer_text)
+                    await reaction.message.edit(embed=embed)
+                    
+                    self._log_reaction(reaction, user, "added")
+                    print(f"\n{'='*50}\nAuto-refresh paused by {user.name}#{user.discriminator}\n{'='*50}")
+                
+                # Handle resume emoji
+                elif emoji == "▶️":
+                    self.auto_refresh_enabled = True
+                    
+                    # Update the embed footer
+                    embed = reaction.message.embeds[0]
+                    footer_text = embed.footer.text
+                    footer_text = footer_text.replace("⏸️ Auto-refresh paused", "🔄 Auto-refresh enabled")
+                    embed.set_footer(text=footer_text)
+                    await reaction.message.edit(embed=embed)
+                    
+                    self._log_reaction(reaction, user, "added")
+                    print(f"\n{'='*50}\nAuto-refresh resumed by {user.name}#{user.discriminator}\n{'='*50}")
+                
+                # Remove any other reactions
+                for r in reaction.message.reactions:
+                    if str(r.emoji) not in ["⏸️", "▶️"]:
+                        await r.clear()
+
+        @self.event
+        async def on_reaction_remove(reaction, user):
+            # Ignore bot's own reactions
+            if user.bot:
+                return
+                
+            # Check if this is our status message
+            if reaction.message == self.last_status_message:
+                # Check if it's one of our control emojis
+                if str(reaction.emoji) in ["⏸️", "▶️"]:
+                    self._log_reaction(reaction, user, "removed")
+
     async def _clean_channel(self, ctx):
         def not_pinned(message):
             return not message.pinned
@@ -420,6 +500,8 @@ If something's not working, contact the admin!
                     await self.last_status_message.edit(embed=embed)
                 else:
                     self.last_status_message = await ctx.send(embed=embed)
+                    await self.last_status_message.add_reaction("⏸️")
+                    await self.last_status_message.add_reaction("▶️")
                 return
 
             # Format and send messages
@@ -452,10 +534,14 @@ If something's not working, contact the admin!
                     if status_filter != "all":
                         filter_info += f"🔍 Filter: {status_filter} | "
                 
-                footer_text = f"{filter_info}🔄 Auto-updates every 5 minutes | Last update: {datetime.now().strftime('%H:%M:%S')} | 💾 Powered by r-lab.ovh"
+                refresh_status = "🔄 Auto-refresh enabled" if self.auto_refresh_enabled else "⏸️ Auto-refresh paused"
+                footer_text = f"{filter_info}{refresh_status} | Last update: {datetime.now().strftime('%H:%M:%S')} | 💾 Powered by r-lab.ovh"
                 embed.set_footer(text=footer_text)
                 
                 last_message = await ctx.send(embed=embed)
+                if i == 1:  # Only add reactions to the first message
+                    await last_message.add_reaction("⏸️")
+                    await last_message.add_reaction("▶️")
             
             self.last_status_message = last_message
 
@@ -484,7 +570,7 @@ If something's not working, contact the admin!
         await self.wait_until_ready()
         while not self.is_closed():
             try:
-                if self.last_status_message and self.last_status_message.channel:
+                if self.last_status_message and self.last_status_message.channel and self.auto_refresh_enabled:
                     # Use stored filters for updates
                     await self._update_status_message(
                         self.last_status_message.channel,
