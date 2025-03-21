@@ -17,6 +17,10 @@ A Discord bot that interfaces with qBittorrent to monitor and manage your torren
    ```bash
    pip install -r requirements.txt
    ```
+2.1 Create Discord bot
+   ```
+   Login to the discord developer website, create a new bot. (not going in detail)
+   ````
 3. Configure the `.env` file with your settings:
    ```
    BOT_CHANNEL=your_discord_channel_id
