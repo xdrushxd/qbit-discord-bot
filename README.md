@@ -59,8 +59,19 @@ You can combine filters, for example:
 - **Performance**: Efficient filtering and sorting of torrent lists
 - **Maintainability**: Well-documented code with clear structure 
 
-## Visual Pleasure
+## 📸 Visual Preview  
 
-- **Help Command Executed** https://i.imgur.com/UsgSkvU.png
-- **Server Output Shell** https://i.imgur.com/aJDLlU3.png
-- **Discord Channel Output** https://i.imgur.com/rSS5uga.png
+Get a glimpse of how the bot operates with these screenshots:  
+
+### 🛠️ Help Command Execution  
+When the help command is triggered, users see a structured list of available commands:  
+![Help](https://i.imgur.com/UsgSkvU.png)  
+
+### 🖥️ Server Shell Output  
+Real-time execution logs displayed directly in the server terminal:  
+![Shell](https://i.imgur.com/aJDLlU3.png)  
+
+### 💬 Discord Channel Output  
+How the bot interacts within a Discord channel:  
+![Channel](https://i.imgur.com/rSS5uga.png)  
+
