@@ -60,6 +60,16 @@ class Config:
             'DISCORD_TOKEN': os.getenv('DISCORD_TOKEN')
         }
 
+    @staticmethod
+    def map_category(category):
+        category_map = {
+            'tv': os.getenv('TV_CATEGORY', 'tv-sonarr'),
+            'movies': os.getenv('MOVIE_CATEGORY', 'radarr'),
+            'tv-sonarr': os.getenv('TV_CATEGORY', 'tv-sonarr'),
+            'radarr': os.getenv('MOVIE_CATEGORY', 'radarr')
+        }
+        return category_map.get(category.lower(), category)
+
 class TorrentManager:
     def __init__(self, client):
         self.client = client
@@ -151,6 +161,13 @@ class DiscordBot(commands.Bot):
         self.qbt_client = self._setup_qbit_client()
         self.torrent_manager = TorrentManager(self.qbt_client)
 
+        # Status update tracking
+        self.last_status_message = None
+        self.auto_update_task = None
+        self.update_interval = 300  # Update every 5 minutes
+        self.current_category = "all"  # Track current category filter
+        self.current_status_filter = "all"  # Track current status filter
+
         # Register commands
         self.add_commands()
 
@@ -168,14 +185,63 @@ class DiscordBot(commands.Bot):
             logger.error(f"Failed to connect to qBittorrent: {str(e)}")
             raise
 
+    def _log_command(self, ctx, command_name, args=None):
+        """Log command usage with user details"""
+        user = ctx.author
+        guild = ctx.guild
+        channel = ctx.channel
+        
+        # Format the command and its arguments
+        command_str = f"${command_name}"
+        if args:
+            command_str += f" {' '.join(str(arg) for arg in args)}"
+        
+        # Create a visually distinct log message
+        log_message = (
+            f"\n{'='*50}\n"
+            f"Command executed by: {user.name}#{user.discriminator} (ID: {user.id})\n"
+            f"Server: {guild.name} (ID: {guild.id})\n"
+            f"Channel: #{channel.name} (ID: {channel.id})\n"
+            f"Command: {command_str}\n"
+            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"{'='*50}"
+        )
+        
+        # Print to console and log file
+        print(log_message)
+        logger.info(f"Command executed: {command_str} by {user.name}#{user.discriminator}")
+
     def add_commands(self):
         @self.event
         async def on_ready():
+            startup_message = (
+                f"\n{'='*50}\n"
+                f"Bot is ready!\n"
+                f"Logged in as: {self.user.name} (ID: {self.user.id})\n"
+                f"Connected to {len(self.guilds)} servers\n"
+                f"Monitoring channel ID: {self.config['BOT_CHANNEL']}\n"
+                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"{'='*50}"
+            )
+            print(startup_message)
             logger.info(f'Bot is ready: {self.user.name} ({self.user.id})')
             await self.change_presence(activity=discord.Game(name="Type $help for commands! 🤖"))
+            
+            # Start the auto-update task
+            if self.auto_update_task is None:
+                self.auto_update_task = self.loop.create_task(self._auto_update_status())
+
+        @self.event
+        async def on_command_error(ctx, error):
+            if isinstance(error, commands.errors.CommandNotFound):
+                await ctx.send(f"❌ Unknown command. Type `$help` to see available commands!")
+                self._log_command(ctx, ctx.message.content, ["ERROR: Command not found"])
+            else:
+                await ctx.send(f"❌ An error occurred: {str(error)}")
+                self._log_command(ctx, ctx.message.content, [f"ERROR: {str(error)}"])
 
         @self.command(name='status', 
-                     brief="📥 Check your torrent downloads",
+                     brief="📥 Check your torrent downloads (Auto-updates every 5 minutes)",
                      help="""
 🔍 **How to use the status command:**
 
@@ -195,6 +261,7 @@ class DiscordBot(commands.Bot):
    `$status tv downloading` - Shows TV shows currently downloading
 
 💡 **Tips:**
+• Status automatically updates every 5 minutes
 • Use `$status all` to see everything
 • Downloads are automatically sorted by progress
 • Each torrent shows:
@@ -207,6 +274,9 @@ class DiscordBot(commands.Bot):
 ❓ Need more help? Just type `$help` for all commands!
 """)
         async def status(ctx, category="all", status_filter="all"):
+            # Log the command
+            self._log_command(ctx, "status", [category, status_filter])
+
             if str(ctx.channel.id) != self.config['BOT_CHANNEL']:
                 await ctx.send("❌ Oops! I can only respond to commands in the designated download status channel!")
                 return
@@ -215,30 +285,8 @@ class DiscordBot(commands.Bot):
                 # Clean up old messages
                 await self._clean_channel(ctx)
                 
-                # Get and filter torrent list
-                torrents = self.torrent_manager.get_torrent_list()
-                filtered = self._filter_torrents(torrents, category, status_filter)
-                
-                if not filtered:
-                    embed = discord.Embed(
-                        title="No Downloads Found 🤔",
-                        description="Nothing is downloading right now! Why not request something new? 🎬",
-                        color=discord.Color.blue()
-                    )
-                    await ctx.send(embed=embed)
-                    return
-
-                # Format and send messages
-                messages = self._format_for_discord(filtered)
-                for i, msg in enumerate(messages, 1):
-                    embed = discord.Embed(
-                        title=f"Download Status {f'(Part {i}/{len(messages)})' if len(messages) > 1 else ''}",
-                        description=msg,
-                        color=discord.Color.green(),
-                        timestamp=datetime.now()
-                    )
-                    embed.set_footer(text="🔄 Updates automatically | 💾 Powered by r-lab.ovh")
-                    await ctx.send(embed=embed)
+                # Update status
+                await self._update_status_message(ctx, category, status_filter)
 
             except Exception as e:
                 logger.error(f"Error in status command: {str(e)}")
@@ -291,6 +339,9 @@ This bot helps you keep track of your downloads from qBittorrent. Here's how to 
 If something's not working, contact the admin!
 """)
         async def help_downloads(ctx):
+            # Log the command
+            self._log_command(ctx, "help_downloads")
+
             if str(ctx.channel.id) != self.config['BOT_CHANNEL']:
                 await ctx.send("❌ Oops! I can only respond to commands in the designated download status channel!")
                 return
@@ -345,6 +396,104 @@ If something's not working, contact the admin!
             messages.append(current_msg)
         
         return messages
+
+    async def _update_status_message(self, ctx, category="all", status_filter="all"):
+        try:
+            # Map category to actual qBittorrent category name
+            mapped_category = Config.map_category(category)
+            
+            # Store current filters (store the user-friendly version)
+            self.current_category = category
+            self.current_status_filter = status_filter
+
+            # Get and filter torrent list
+            torrents = self.torrent_manager.get_torrent_list()
+            filtered = self._filter_torrents(torrents, mapped_category, status_filter)
+            
+            if not filtered:
+                embed = discord.Embed(
+                    title="No Downloads Found 🤔",
+                    description="Nothing is downloading right now! Why not request something new? 🎬",
+                    color=discord.Color.blue()
+                )
+                if self.last_status_message:
+                    await self.last_status_message.edit(embed=embed)
+                else:
+                    self.last_status_message = await ctx.send(embed=embed)
+                return
+
+            # Format and send messages
+            messages = self._format_for_discord(filtered)
+            
+            # If we have existing messages, edit them or delete extras
+            if self.last_status_message:
+                try:
+                    await self.last_status_message.delete()
+                except discord.NotFound:
+                    pass
+
+            # Send new messages
+            last_message = None
+            for i, msg in enumerate(messages, 1):
+                embed = discord.Embed(
+                    title=f"Download Status {f'(Part {i}/{len(messages)})' if len(messages) > 1 else ''}",
+                    description=msg,
+                    color=discord.Color.green(),
+                    timestamp=datetime.now()
+                )
+                
+                # Add filter info to footer if filters are active
+                filter_info = ""
+                if category != "all" or status_filter != "all":
+                    if category != "all":
+                        # Use user-friendly category names in the footer
+                        display_category = "TV Shows" if category.lower() in ['tv', 'tv-sonarr'] else "Movies" if category.lower() in ['movies', 'radarr'] else category
+                        filter_info += f"📁 Category: {display_category} | "
+                    if status_filter != "all":
+                        filter_info += f"🔍 Filter: {status_filter} | "
+                
+                footer_text = f"{filter_info}🔄 Auto-updates every 5 minutes | Last update: {datetime.now().strftime('%H:%M:%S')} | 💾 Powered by r-lab.ovh"
+                embed.set_footer(text=footer_text)
+                
+                last_message = await ctx.send(embed=embed)
+            
+            self.last_status_message = last_message
+
+            # Log auto-updates
+            if not hasattr(ctx, 'author'):  # This is an auto-update
+                print(f"\n{'='*50}\nAuto-update completed at {datetime.now().strftime('%H:%M:%S')}")
+                if filtered:
+                    print(f"Found {len(filtered)} {'item' if len(filtered) == 1 else 'items'}")
+                    if category != "all":
+                        print(f"Category filter: {category}")
+                    if status_filter != "all":
+                        print(f"Status filter: {status_filter}")
+                print(f"{'='*50}")
+
+        except Exception as e:
+            logger.error(f"Error updating status: {str(e)}")
+            if ctx:
+                embed = discord.Embed(
+                    title="❌ Error",
+                    description=f"Oops! Something went wrong while updating: {str(e)}\nTrying again in 5 minutes.",
+                    color=discord.Color.red()
+                )
+                await ctx.send(embed=embed)
+
+    async def _auto_update_status(self):
+        await self.wait_until_ready()
+        while not self.is_closed():
+            try:
+                if self.last_status_message and self.last_status_message.channel:
+                    # Use stored filters for updates
+                    await self._update_status_message(
+                        self.last_status_message.channel,
+                        self.current_category,
+                        self.current_status_filter
+                    )
+            except Exception as e:
+                logger.error(f"Auto-update error: {str(e)}")
+            await asyncio.sleep(self.update_interval)
 
 def main():
     try:
